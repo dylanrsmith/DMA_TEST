@@ -145,6 +145,9 @@ unsigned long SPIReadRegisterIndirect (unsigned short Address, unsigned char Len
                                                              
                                                               
   TempLong.Long = SPIReadRegisterDirect(ECAT_CSR_DATA,Len); // read the requested register
+
+  // Serial.printf("Address: %u | Len: %c | Long: %d | Byte: %x\n",Address,Len,TempLong.Long, TempLong.Byte);    // short , char, long
+
   return TempLong.Long;                                     //
 }
 

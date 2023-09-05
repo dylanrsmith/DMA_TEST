@@ -162,5 +162,5 @@ unsigned char EasyCAT_MainTask()                    // must be called cyclically
   {                                                         // and of the watchdog
     Status |= 0x80;                                         //
   }                                                         //
-  return Status;                                            //     
+  return (int)50; //Status;                                            //     
 }

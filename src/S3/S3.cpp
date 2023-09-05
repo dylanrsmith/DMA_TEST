@@ -14,17 +14,22 @@
 */
 
 #include "EasyCAT.h"
-// #include <SPI.h>
+#include <SPI.h>
 #include "Wire.h"
 #include "XPowersLib.h" //https://github.com/lewisxhe/XPowersLib
 #include <ESP32DMASPIMaster.h>
 
 ESP32DMASPI::Master master;
 
-static const uint32_t BUFFER_SIZE = 4;
+static const uint32_t BUFFER_SIZE_SPI = 8; // For SPI Protocol from S3 and C3
+static const uint32_t BUFFER_SIZE_EC = 4; // For EtherCAT Protocol from Master
+static const uint32_t BUFFER_SIZE_CS = 4; // For Chip Select / Shift Register. 
 
 uint8_t *spi_master_tx_buf;
 uint8_t *spi_master_rx_buf;
+
+uint8_t *cs_master_tx_buf;
+uint8_t *cs_master_rx_buf;
 
 XPowersAXP2101 PMU;
 
@@ -53,11 +58,6 @@ const long interval = 200;
 unsigned long previousMs = 0;
 unsigned long previousMillis = 0;
 
-// non DMA
-// static const int spiClk = 20000000;
-// SPIClass *vspi = NULL;
-// SPIClass * hspi = NULL;
-
 float factor1, factor2;
 int ind = 0;
 byte testData = 0;
@@ -67,6 +67,8 @@ byte redColor = 255;
 int magicNumber = 0;
 bool pdo_updated = true;
 bool rainbow = false;
+uint32_t slot1_val = 0;
+uint8_t type = 0;
 
 int count = 0;
 
@@ -79,61 +81,61 @@ void setOUTPUT()
     pinMode(ESP_D4, OUTPUT); // sss
 }
 
-void Application()
-{
-    int prev_num = magicNumber;
-    magicNumber = EasyCAT_BufferOut.Cust.Output2;
+// void Application()
+// {
+//     int prev_num = magicNumber;
+//     magicNumber = EasyCAT_BufferOut.Cust.Slot1;
 
-    if (prev_num != magicNumber)
-    {
-        pdo_updated = true;
-        Serial.println(magicNumber);
-    }
-    else
-    {
-        pdo_updated = false;
-    }
+//     if (prev_num != magicNumber)
+//     {
+//         pdo_updated = true;
+//         Serial.println(magicNumber);
+//     }
+//     else
+//     {
+//         pdo_updated = false;
+//     }
 
-    switch (magicNumber)
-    {
-    case 1: // blue
-        redColor = 0;
-        greenColor = 0;
-        blueColor = 255;
-        break;
-    case 2: // green
-        redColor = 0;
-        greenColor = 255;
-        blueColor = 0;
-        break;
-    case 3: // red
-        redColor = 255;
-        greenColor = 0;
-        blueColor = 0;
-        break;
-    case 4: // orange
-        redColor = 230;
-        greenColor = 140;
-        blueColor = 14;
-        break;
-    case 5: // pink?
-        redColor = 255;
-        greenColor = 78;
-        blueColor = 192;
-        break;
-    case 6:
-        rainbow = true;
-        break;
-    case 7:
-        rainbow = false;
-        break;
-    }
+//     switch (magicNumber)
+//     {
+//     case 1: // blue
+//         redColor = 0;
+//         greenColor = 0;
+//         blueColor = 255;
+//         break;
+//     case 2: // green
+//         redColor = 0;
+//         greenColor = 255;
+//         blueColor = 0;
+//         break;
+//     case 3: // red
+//         redColor = 255;
+//         greenColor = 0;
+//         blueColor = 0;
+//         break;
+//     case 4: // orange
+//         redColor = 230;
+//         greenColor = 140;
+//         blueColor = 14;
+//         break;
+//     case 5: // pink?
+//         redColor = 255;
+//         greenColor = 78;
+//         blueColor = 192;
+//         break;
+//     case 6:
+//         rainbow = true;
+//         break;
+//     case 7:
+//         rainbow = false;
+//         break;
+//     }
 
-    // write to slave TxPDO
-    // dummy value, so that value will be seen constantly changing by ecat master
-    uint32_t actualPosition = EasyCAT_BufferIn.Cust.Input1 + 1;
-    EasyCAT_BufferIn.Cust.Input1 = actualPosition;
-}
+//     // write to slave TxPDO
+//     // dummy value, so that value will be seen constantly changing by ecat master
+//     // uint32_t actualPosition = EasyCAT_BufferIn.Cust.Input1 + 1;
+//     // EasyCAT_BufferIn.Cust.Input1 = actualPosition + 146;
+// }
 
 void digital_macro(bool one, bool two, bool three, bool four, bool zero)
 {
@@ -155,7 +157,7 @@ void shift_macro()
     // digitalWrite(vspi->pinSS(), HIGH);
     // vspi->endTransaction();
     // vspi->end();
-    master.transfer(spi_master_tx_buf, spi_master_rx_buf, BUFFER_SIZE);
+    master.transfer(spi_master_tx_buf, spi_master_rx_buf, BUFFER_SIZE_SPI);
 }
 
 void rainbowAnimation()
@@ -200,11 +202,99 @@ void rainbowAnimation()
 
 void set_buffer()
 {
-    for (uint32_t i = 0; i < BUFFER_SIZE; i++)
+    // Slot Board
+    for (uint32_t i = 0; i < BUFFER_SIZE_SPI; i++)
     {
         spi_master_tx_buf[i] = i & 0xFF;
     }
-    memset(spi_master_rx_buf, 0, BUFFER_SIZE);
+    memset(spi_master_rx_buf, 0, BUFFER_SIZE_SPI);
+
+    // Shift Register
+    for (uint32_t i = 0; i < BUFFER_SIZE_CS; i++)
+    {
+        cs_master_tx_buf[i] = 0x00 & 0xFF;
+    }
+    memset(cs_master_rx_buf, 0, BUFFER_SIZE_CS);
+}
+
+bool ValidateChecksum(uint8_t *buf)
+{
+  if(sizeof(buf) == BUFFER_SIZE_SPI)
+  {
+    uint16_t checksum = 0;
+    for (int i = 0; i < BUFFER_SIZE_SPI - 2; i++) {
+      checksum += buf[i];
+    }
+
+    if((checksum >> 8) == buf[BUFFER_SIZE_SPI - 2] && (checksum & 0xFF) == buf[BUFFER_SIZE_SPI - 1])
+    {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+// call free(XX) o the returned value to free malloc memory 
+uint8_t * AddChecksum(uint8_t *buf, uint8_t type)
+{
+  uint8_t *ret_buf = (uint8_t *) malloc(BUFFER_SIZE_SPI);
+  if(sizeof(buf) == BUFFER_SIZE_EC)
+  {
+    uint16_t checksum = type;
+    for (int i = 0; i < BUFFER_SIZE_EC; i++) {
+      checksum += buf[i];
+      ret_buf[i+1] = buf[i];
+    }
+
+    ret_buf[0] = type;
+    ret_buf[BUFFER_SIZE_SPI-3] = 0x00;
+    ret_buf[BUFFER_SIZE_SPI-2] = checksum >> 8;
+    ret_buf[BUFFER_SIZE_SPI-1] = checksum & 0xFF;
+  }
+  return ret_buf;
+}
+
+void EtherCAT_Read()
+{
+    type = EasyCAT_BufferOut.Cust.type;
+    //slot1_val = EasyCAT_BufferOut.Cust.Slot1;
+    slot1_val = 25252;
+    
+    //Serial.printf("EtherCATREAD: type = %d\nslot1_val = %d\n",type,slot1_val);
+
+    spi_master_tx_buf[0] = type;
+    spi_master_tx_buf[1] = 2;//(slot1_val >> 24) & 0xFF;
+    spi_master_tx_buf[2] = 3;//(slot1_val >> 16) & 0xFF;
+    spi_master_tx_buf[3] = 4;//(slot1_val >> 8) & 0xFF;
+    spi_master_tx_buf[4] = 5;//slot1_val & 0xFF;
+
+    spi_master_tx_buf[5] = 0;
+    spi_master_tx_buf[6] = 0;
+    spi_master_tx_buf[7] = 0;
+
+   
+     uint8_t *bufffff = AddChecksum(spi_master_tx_buf, type);
+     spi_master_tx_buf=bufffff;
+     free(bufffff);
+    //spi_master_tx_buf[7] = ValidateChecksum(spi_master_rx_buf);
+    //spi_master_tx_buf[7] = ValidateChecksum(spi_master_tx_buf);
+
+}
+
+void EtherCAT_Write()
+{
+    // Convert the byte array into a uint32_t
+    uint32_t result = 0;
+
+    for (int i = 1; i < 5; i++) {
+        // Shift the uint32_t left by 8 bits and OR it with the current uint8_t element
+        result = (result << 8) | spi_master_rx_buf[i];
+    }
+
+    // Serial.printf("EtherCAT WRITE: result = %d\n",result);
+
+    EasyCAT_BufferIn.Cust.Slot1 = result;
 }
 
 void setup()
@@ -214,11 +304,11 @@ void setup()
     Serial.println("SERIAL OPENED");
 
     // EtherCAT SETUP
-    // pinMode(40, OUTPUT); // EC RST pin
-    // digitalWrite(40, HIGH);
-    // delay(500);
-    // Serial.print("ETHER CAT Initialization...");
-    // EasyCAT_Init(SpiCS_Pin, ASYNC);
+    pinMode(40, OUTPUT); // EC RST pin
+    digitalWrite(40, HIGH);
+    delay(500);
+    Serial.print("ETHER CAT Initialization...");
+    EasyCAT_Init(SpiCS_Pin, ASYNC);
 
     Serial.println("SERIAL OPENED");
     // FPGA SETUP
@@ -268,46 +358,65 @@ void setup()
     digitalWrite(ESP_D0, HIGH); // all is applied on rising edge
     digitalWrite(ESP_D0, LOW);
     delay(10);
-    // digitalWrite(ESP_D1, LOW);
-    // digitalWrite(ESP_D2, LOW);
-    // digitalWrite(ESP_D3, LOW);
-    // digitalWrite(ESP_D4, LOW);
-    // delay(10);
-    delay(10);
 
     // to use DMA buffer, use these methods to allocate buffer
-    spi_master_tx_buf = master.allocDMABuffer(BUFFER_SIZE);
-    spi_master_rx_buf = master.allocDMABuffer(BUFFER_SIZE);
-    // start DMA master
-    // set_buffer();
-    delay(1000);
+    // Slot Boards
+    spi_master_tx_buf = master.allocDMABuffer(BUFFER_SIZE_SPI);
+    spi_master_rx_buf = master.allocDMABuffer(BUFFER_SIZE_SPI);
+
+    // Shift Registers
+    cs_master_tx_buf = master.allocDMABuffer(BUFFER_SIZE_CS);
+    cs_master_rx_buf = master.allocDMABuffer(BUFFER_SIZE_CS);
+    
+    delay(10);
     master.setDataMode(SPI_MODE0);          // default: SPI_MODE0
-    master.setFrequency(2000000);           // default: 8MHz (too fast for bread board...)
-    master.setMaxTransferSize(BUFFER_SIZE); // default: 4092 bytes
+    master.setFrequency(20000000);          // 40/30 million seems to create errors
+    master.setMaxTransferSize(BUFFER_SIZE_SPI); // default: 4092 bytes
 
     // try different spi buses? vsp,hspi,fspi...
     master.begin(HSPI, ESP_D1, ESP_D5, ESP_D2, ESP_D4); // default: HSPI (CLK MISO MOSI CS)
 
     Serial.println("Starting...SETUP COMPLETE");
+    
+    set_buffer();
 
-    spi_master_tx_buf[0] = uint8_t(1);
-    spi_master_tx_buf[1] = uint8_t(2);
-    // spi_master_tx_buf[2] = uint8_t(3);
-    // spi_master_tx_buf[3] = uint8_t(4);
+    cs_master_tx_buf[0] = uint8_t(5);
+    cs_master_tx_buf[1] = uint8_t(6);
+    cs_master_tx_buf[2] = uint8_t(7);
+    cs_master_tx_buf[3] = uint8_t(8);
+
+    pinMode(7,OUTPUT);
+    digitalWrite(7,LOW);
 }
 
 void loop()
 {    
-    spi_master_tx_buf[0] = count++;    
-    Serial.println("LOOP");
-    digitalWrite(ESP_D3, HIGH); // OE
-    master.transfer(spi_master_tx_buf, spi_master_rx_buf, BUFFER_SIZE);
-    digitalWrite(ESP_D3, LOW);
-    delay(1000);
+    digitalWrite(7,HIGH);
 
-    for (size_t i = 0; i < BUFFER_SIZE; ++i)
+    //////////////////////////////////
+    // EtherCAT Functions
+    //Application();
+    EtherCAT_Read();
+    EasyCAT_MainTask();
+    //////////////////////////////////
+    
+    // spi_master_tx_buf[0] = count++;    
+    for (int i = 0; i < 32; i++)
     {
-      Serial.printf("Master rx: %d\n", spi_master_rx_buf[i]);      
+        digitalWrite(ESP_D3, HIGH); // OE
+        master.transfer(spi_master_tx_buf, spi_master_rx_buf, BUFFER_SIZE_SPI);
+        digitalWrite(ESP_D3, LOW);
+        
+        if(spi_master_rx_buf[0] == 0 || spi_master_rx_buf[0] == 255){
+            Serial.println(spi_master_rx_buf[0]);
+        }
+
+
+        // cs_master_tx_buf[0] = i;
+        // master.transfer(cs_master_tx_buf, cs_master_rx_buf, BUFFER_SIZE_CS);
     }
 
+    EtherCAT_Write();
+
+    digitalWrite(7,LOW);
 }

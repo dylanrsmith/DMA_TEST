@@ -108,34 +108,6 @@ void saveConfiguration(const char *filename, const Config &config)
   }
 }
 
-void low_freq(const int pin, const int freq)
-{
-  unsigned long currentMillisPWM = millis();
-
-  // 500 / freq???
-  float period = 1000.0 / freq; // 1000 since we are using milliseconds to keep track
-  // float period = 1.0/freq;
-  // Serial.printf("period: %f\n",period);
-  if (currentMillisPWM - previousMillisPWM >= period)
-  {
-    // save the last time you blinked the LED
-    previousMillisPWM = currentMillisPWM;
-
-    // if the LED is off turn it on and vice-versa:
-    if (pwmState == LOW && freq != 0)
-    {
-      pwmState = HIGH;
-    }
-    else
-    {
-      pwmState = LOW;
-    }
-
-    // set the LED with the ledState of the variable:
-    digitalWrite(pin, pwmState);
-  }
-}
-
 bool ValidateChecksum(uint8_t *buf)
 {
   // if (sizeof(buf) == BUFFER_SIZE_SPI)
@@ -196,21 +168,7 @@ void setup()
   pinMode(ESP_D4, INPUT);              // ss io13a
   pinMode(ESP_D5, OUTPUT);             // miso io13b
   loadConfiguration(filename, config); // Load JSON Type Bit
-  if (pwmFreq > 200)
-  {
-    // freq out setup
-    ledcSetup(1, pwmFreq, 10); // channel,freq,pwm  FOR PWM ONLY
-    ledcAttachPin(IO_0, 1);    // pin, channel
-    ledcWriteTone(1, pwmFreq); // 20000
-    ledcWrite(1, 128);         // channel, duty value 0..255;
-    low_speed_freq = false;
-  }
-  else
-  {
-    // BitBang
-    pinMode(IO_0, OUTPUT);
-    low_speed_freq = true;
-  }
+
   // PWM input
   // SYNC_PIN.begin(true);
   pinMode(digout, OUTPUT);
@@ -270,39 +228,4 @@ void loop()
   }
 
   digitalWrite(digout, LOW);
-
-  unsigned long currentMillis = millis();
-  if (!low_speed_freq)
-  {
-    if (currentMillis - previousMillis >= 500)
-    {
-      previousMillis = currentMillis;
-
-      Serial.print("microseconds active: ");
-      Serial.println(SYNC_PIN.getValue());
-
-      input1024 = input1024 + 2;
-      ledcWrite(1, input1024 * 4);
-
-      // dutyCycle = ((input1024 *4)/1024)*100;
-      dutyCycle = (static_cast<float>(input1024 * 4) / 1024.0) * 100.0;
-
-      // Serial.printf("Writing duty cycle of : %f\n ", dutyCycle);
-      // Serial.printf("(actualinput:%d)\n", (input1024 * 4));
-      if (input1024 > 250) // start over if we reach max input
-      {
-        input1024 = 0;
-      }
-    }
-  }
-  else if (low_speed_freq)
-  {
-    if (currentMillis - previousMillis >= 500)
-    {
-      previousMillis = currentMillis;
-      // Serial.print("microseconds active: ");
-      // Serial.println(SYNC_PIN.getValue());
-    }
-    low_freq(IO_0, pwmFreq); // Bit bang a lower freq pwm signal
-  }
 }
